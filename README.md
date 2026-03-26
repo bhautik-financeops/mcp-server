@@ -24,10 +24,10 @@ JIRA_PROJECT_KEY=FIN
 
 # ─── MongoDB ─────────────────────────────────────────────────────────────────
 # Full MongoDB connection URI for the production cluster (read-only)
-MONGO_URI_PROD=mongodb+srv://<user>:<password>@prod-cluster.mongodb.net/?retryWrites=true&w=majority
+MONGO_URI_PROD=
 
 # Full MongoDB connection URI for the QA / staging cluster (read + write)
-MONGO_URI_QA=mongodb+srv://<user>:<password>@qa-cluster.mongodb.net/?retryWrites=true&w=majority
+MONGO_URI_QA=
 ```
 
 > **Never commit `.env` to source control.** It is listed in `.gitignore`.
