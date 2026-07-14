@@ -132,5 +132,59 @@ def describe_endpoint(path: str) -> Dict[str, Any]:
     return _describe_endpoint(_load_openapi(), path)
 
 
+def _do_request(
+    method: str,
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    url = f"{_base_url()}{path}"
+    headers = {"Content-Type": "application/json", API_KEY_HEADER: _required_env("PYWS_API_KEY")}
+    if extra_headers:
+        headers.update(extra_headers)
+    import time as _time
+    started = _time.monotonic()
+    response = requests.request(method.upper(), url, headers=headers, json=payload, timeout=timeout)
+    latency_ms = int((_time.monotonic() - started) * 1000)
+    try:
+        body: Any = response.json()
+    except ValueError:
+        body = response.text
+    return {
+        "status": response.status_code,
+        "ok": 200 <= response.status_code < 300,
+        "latencyMs": latency_ms,
+        "body": body,
+    }
+
+
+@mcp.tool()
+def call_endpoint(
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+    method: str = "POST",
+    extra_headers: Optional[Dict[str, str]] = None,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Fire one authenticated request at the running py_webservice and return status/body/latency."""
+    return _do_request(method, path, payload, extra_headers, timeout)
+
+
+@mcp.tool()
+def health() -> Dict[str, Any]:
+    """Check app reachability: GET /ping plus authenticated GET /dev/platform-configurations."""
+    result: Dict[str, Any] = {}
+    try:
+        result["ping"] = _do_request("GET", "/ping", None, None, 10)
+    except Exception as exc:  # noqa: BLE001 - report unreachable rather than crash
+        result["ping"] = {"ok": False, "error": str(exc)}
+    try:
+        result["platform"] = _do_request("GET", "/dev/platform-configurations", None, None, 10)
+    except Exception as exc:  # noqa: BLE001
+        result["platform"] = {"ok": False, "error": str(exc)}
+    return result
+
+
 if __name__ == "__main__":
     mcp.run()
