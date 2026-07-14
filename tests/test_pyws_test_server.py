@@ -122,3 +122,55 @@ def test_merge_clients_adds_override_only_client():
     by_id = {c["clientId"]: c for c in merged}
     assert by_id["Z"]["source"] == "override"
     assert by_id["Z"]["preferredMedium"] == "sms"
+
+
+def test_build_client_payload_ai_envelope():
+    base = {"Request": {"payload": [{"primaryKey": "1", "text": "hi"}]}}
+    client = {"clientId": "A", "sampleCustomerId": "custA", "preferredMedium": "email"}
+    body = server._build_client_payload(base, client, "communicationMedium")
+    item = body["Request"]["payload"][0]
+    assert item["clientId"] == "A"
+    assert item["customerId"] == "custA"
+    assert item["communicationMedium"] == "email"
+    assert item["text"] == "hi"                       # untouched
+    assert base["Request"]["payload"][0].get("clientId") is None  # deep-copied, no mutation
+
+
+def test_build_client_payload_flat_core():
+    base = {"someField": 1}
+    client = {"clientId": "B", "sampleCustomerId": None, "preferredMedium": "sms"}
+    body = server._build_client_payload(base, client, "communicationMedium")
+    assert body["clientId"] == "B"
+    assert body["communicationMedium"] == "sms"
+    assert body["someField"] == 1
+
+
+def test_fanout_isolates_failures(monkeypatch):
+    monkeypatch.setattr(server, "_fetch_clients_from_mongo",
+                        lambda: [{"clientId": "A", "preferredMedium": "email"},
+                                 {"clientId": "B", "preferredMedium": "sms"}])
+    monkeypatch.setattr(server, "_load_overrides",
+                        lambda: {"include_only": [], "exclude": [], "clients": {}})
+
+    def fake_do_request(method, path, payload, extra_headers, timeout):
+        cid = payload["Request"]["payload"][0]["clientId"]
+        if cid == "B":
+            raise RuntimeError("connection reset")
+        return {"status": 200, "ok": True, "latencyMs": 5, "body": {"Response": {"code": 200}}}
+
+    monkeypatch.setattr(server, "_do_request", fake_do_request)
+    out = server.fanout_test("/api/ai/v1/chatbot/predictions",
+                             {"Request": {"payload": [{}]}})
+    assert out["summary"] == {"total": 2, "ok": 1, "failed": 1}
+    by_id = {r["clientId"]: r for r in out["results"]}
+    assert by_id["A"]["ok"] is True
+    assert by_id["B"]["ok"] is False
+    assert "connection reset" in by_id["B"]["errorSnippet"]
+
+
+def test_fanout_empty_clientlist_raises(monkeypatch):
+    monkeypatch.setattr(server, "_fetch_clients_from_mongo", lambda: [])
+    monkeypatch.setattr(server, "_load_overrides",
+                        lambda: {"include_only": [], "exclude": [], "clients": {}})
+    with pytest.raises(ValueError):
+        server.fanout_test("/x", {"Request": {"payload": [{}]}})

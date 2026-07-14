@@ -264,5 +264,62 @@ def get_clients(filter: Optional[str] = None) -> Dict[str, Any]:
     return {"count": len(merged), "clients": merged}
 
 
+def _build_client_payload(
+    base_payload: Dict[str, Any], client: Dict[str, Any], medium_field: str
+) -> Dict[str, Any]:
+    body = copy.deepcopy(base_payload)
+    request = body.get("Request") if isinstance(body, dict) else None
+    items = request.get("payload") if isinstance(request, dict) else None
+    targets = items if isinstance(items, list) and items else [body]
+    for target in targets:
+        target["clientId"] = client["clientId"]
+        if client.get("sampleCustomerId"):
+            target["customerId"] = client["sampleCustomerId"]
+        if client.get("preferredMedium"):
+            target[medium_field] = client["preferredMedium"]
+    return body
+
+
+@mcp.tool()
+def fanout_test(
+    path: str,
+    base_payload: Dict[str, Any],
+    client_filter: Optional[str] = None,
+    medium_field: str = "communicationMedium",
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Fire `path` once per distinct client, each via its preferred medium; return a per-client aggregate."""
+    clients = _merge_clients(_fetch_clients_from_mongo(), _load_overrides())
+    if client_filter:
+        needle = client_filter.strip().lower()
+        clients = [c for c in clients if needle in c["clientId"].lower()]
+    if not clients:
+        raise ValueError("No clients to fan out over (empty client list). Check Mongo/overrides/filter.")
+
+    results: List[Dict[str, Any]] = []
+    ok_count = 0
+    for client in clients:
+        try:
+            payload = _build_client_payload(base_payload, client, medium_field)
+            resp = _do_request("POST", path, payload, None, timeout)
+            ok = bool(resp["ok"])
+            snippet = None if ok else str(resp["body"])[:500]
+            results.append({
+                "clientId": client["clientId"], "medium": client.get("preferredMedium"),
+                "status": resp["status"], "ok": ok, "errorSnippet": snippet, "body": resp["body"],
+            })
+        except Exception as exc:  # noqa: BLE001 - isolate one client's failure
+            results.append({
+                "clientId": client["clientId"], "medium": client.get("preferredMedium"),
+                "status": None, "ok": False, "errorSnippet": str(exc)[:500], "body": None,
+            })
+        if results[-1]["ok"]:
+            ok_count += 1
+    return {
+        "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
+        "results": results,
+    }
+
+
 if __name__ == "__main__":
     mcp.run()
