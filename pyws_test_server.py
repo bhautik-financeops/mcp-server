@@ -148,7 +148,16 @@ def _do_request(
         headers.update(extra_headers)
     import time as _time
     started = _time.monotonic()
-    response = requests.request(method.upper(), url, headers=headers, json=payload, timeout=timeout)
+    try:
+        response = requests.request(method.upper(), url, headers=headers, json=payload, timeout=timeout)
+    except requests.exceptions.RequestException as exc:
+        return {
+            "status": None,
+            "ok": False,
+            "latencyMs": int((_time.monotonic() - started) * 1000),
+            "body": str(exc),
+            "error": str(exc),
+        }
     latency_ms = int((_time.monotonic() - started) * 1000)
     try:
         body: Any = response.json()
@@ -208,13 +217,16 @@ def _fetch_clients_from_mongo() -> List[Dict[str, Any]]:
     id_field = os.getenv("PYWS_CLIENT_ID_FIELD", "_id").strip()
     medium_field = os.getenv("PYWS_MEDIUM_FIELD", "communicationMedium").strip()
     client = MongoClient(uri, serverSelectionTimeoutMS=10_000, tlsCAFile=certifi.where())
-    cursor = client[db_name][collection].find({}, {id_field: 1, medium_field: 1})
-    clients: List[Dict[str, Any]] = []
-    for doc in cursor:
-        raw_id = doc.get(id_field)
-        if raw_id is None:
-            continue
-        clients.append({"clientId": str(raw_id), "preferredMedium": doc.get(medium_field)})
+    try:
+        cursor = client[db_name][collection].find({}, {id_field: 1, medium_field: 1})
+        clients: List[Dict[str, Any]] = []
+        for doc in cursor:
+            raw_id = doc.get(id_field)
+            if raw_id is None:
+                continue
+            clients.append({"clientId": str(raw_id), "preferredMedium": doc.get(medium_field)})
+    finally:
+        client.close()
     return clients
 
 
@@ -366,8 +378,8 @@ def stack_status() -> Dict[str, Any]:
             ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"],
             capture_output=True, text=True, timeout=20,
         )
-    except FileNotFoundError:
-        return {"ok": False, "error": "docker not found on PATH"}
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"docker command failed: {exc}"}
     if done.returncode != 0:
         return {"ok": False, "error": done.stderr.strip() or "docker ps failed"}
     return {"ok": True, "containers": _docker_names_from_ps(done.stdout)}
@@ -382,13 +394,16 @@ def container_logs(engine: str = "sync", lines: int = 200, grep: Optional[str] =
             ["docker", "logs", "--tail", str(lines), name],
             capture_output=True, text=True, timeout=30,
         )
-    except FileNotFoundError:
-        return {"engine": engine, "container": name, "ok": False, "error": "docker not found on PATH"}
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"engine": engine, "container": name, "ok": False, "error": f"docker command failed: {exc}"}
     if done.returncode != 0:
         return {"engine": engine, "container": name, "ok": False,
                 "error": done.stderr.strip() or "container not found / stack down"}
-    pattern = grep if grep is not None else r"ERROR|Traceback|Exception"
-    regex = re.compile(pattern)
+    pattern = grep.strip() if (grep and grep.strip()) else r"ERROR|Traceback|Exception"
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return {"engine": engine, "container": name, "ok": False, "error": f"invalid grep regex: {exc}"}
     combined = (done.stdout + done.stderr).splitlines()
     matched = [ln for ln in combined if regex.search(ln)]
     return {"engine": engine, "container": name, "ok": True,
@@ -404,8 +419,8 @@ def stack_restart(engine: str = "all") -> Dict[str, Any]:
         try:
             done = subprocess.run(["docker", "restart", name], capture_output=True, text=True, timeout=60)
             results[name] = {"ok": done.returncode == 0, "error": done.stderr.strip() or None}
-        except FileNotFoundError:
-            results[name] = {"ok": False, "error": "docker not found on PATH"}
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            results[name] = {"ok": False, "error": f"docker command failed: {exc}"}
     return {"restarted": results}
 
 
@@ -417,8 +432,8 @@ def stack_down() -> Dict[str, Any]:
             ["docker", "compose", "-f", _COMPOSE_FILE, "down"],
             cwd=_repo_dir(), capture_output=True, text=True, timeout=120,
         )
-    except FileNotFoundError:
-        return {"ok": False, "error": "docker not found on PATH"}
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"docker command failed: {exc}"}
     return {"ok": done.returncode == 0, "output": (done.stdout + done.stderr).strip()}
 
 

@@ -235,3 +235,21 @@ def test_stack_down_handles_missing_docker(monkeypatch):
     out = server.stack_down()
     assert out["ok"] is False
     assert "docker" in out["error"]
+
+
+def test_call_endpoint_network_error_returns_evidence(monkeypatch):
+    def boom(*args, **kwargs):
+        raise server.requests.exceptions.ConnectionError("refused")
+    monkeypatch.setattr(server.requests, "request", boom)
+    out = server.call_endpoint("/api/ai/v1/check-send/predictions", {"Request": {"payload": []}})
+    assert out["ok"] is False
+    assert "refused" in out["error"]
+
+
+def test_container_logs_invalid_grep(monkeypatch):
+    class _Done:
+        stdout = "x\n"; stderr = ""; returncode = 0
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _Done())
+    out = server.container_logs("sync", grep="(unclosed")
+    assert out["ok"] is False
+    assert "invalid grep regex" in out["error"]
