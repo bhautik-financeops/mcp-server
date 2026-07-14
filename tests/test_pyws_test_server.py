@@ -1,0 +1,37 @@
+import importlib
+import os
+
+import pytest
+
+os.environ.setdefault("PYWS_BASE_URL", "http://localhost:8080")
+os.environ.setdefault("PYWS_API_KEY", "test-masked-key")
+os.environ.setdefault("PYWS_REPO_DIR", os.path.dirname(os.path.dirname(__file__)))
+
+server = importlib.import_module("pyws_test_server")
+
+
+def test_load_openapi_has_paths():
+    spec = server._load_openapi()
+    assert "paths" in spec
+    assert len(spec["paths"]) > 50
+
+
+def test_list_endpoints_filters():
+    spec = server._load_openapi()
+    rows = server._list_endpoints(spec, "rule-engine")
+    assert rows
+    assert all("rule-engine" in r["path"] for r in rows)
+    assert {"path", "method"} <= set(rows[0])
+
+
+def test_describe_endpoint_returns_methods_and_body():
+    spec = server._load_openapi()
+    desc = server._describe_endpoint(spec, "/api/ai/v1/check-send/predictions")
+    assert desc["path"] == "/api/ai/v1/check-send/predictions"
+    assert "POST" in [op["method"] for op in desc["operations"]]
+
+
+def test_describe_endpoint_unknown_path_raises():
+    spec = server._load_openapi()
+    with pytest.raises(ValueError):
+        server._describe_endpoint(spec, "/no/such/path")
