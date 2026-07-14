@@ -377,10 +377,13 @@ def stack_status() -> Dict[str, Any]:
 def container_logs(engine: str = "sync", lines: int = 200, grep: Optional[str] = None) -> Dict[str, Any]:
     """Tail docker logs for the sync API or async worker, optionally regex-filtered (default ERROR/Traceback)."""
     name = _engine_container(engine)
-    done = subprocess.run(
-        ["docker", "logs", "--tail", str(lines), name],
-        capture_output=True, text=True, timeout=30,
-    )
+    try:
+        done = subprocess.run(
+            ["docker", "logs", "--tail", str(lines), name],
+            capture_output=True, text=True, timeout=30,
+        )
+    except FileNotFoundError:
+        return {"engine": engine, "container": name, "ok": False, "error": "docker not found on PATH"}
     if done.returncode != 0:
         return {"engine": engine, "container": name, "ok": False,
                 "error": done.stderr.strip() or "container not found / stack down"}
@@ -398,18 +401,24 @@ def stack_restart(engine: str = "all") -> Dict[str, Any]:
     targets = list(_CONTAINERS.values()) if engine.strip().lower() == "all" else [_engine_container(engine)]
     results = {}
     for name in targets:
-        done = subprocess.run(["docker", "restart", name], capture_output=True, text=True, timeout=60)
-        results[name] = {"ok": done.returncode == 0, "error": done.stderr.strip() or None}
+        try:
+            done = subprocess.run(["docker", "restart", name], capture_output=True, text=True, timeout=60)
+            results[name] = {"ok": done.returncode == 0, "error": done.stderr.strip() or None}
+        except FileNotFoundError:
+            results[name] = {"ok": False, "error": "docker not found on PATH"}
     return {"restarted": results}
 
 
 @mcp.tool()
 def stack_down() -> Dict[str, Any]:
     """Stop the local stack via docker compose down."""
-    done = subprocess.run(
-        ["docker", "compose", "-f", _COMPOSE_FILE, "down"],
-        cwd=_repo_dir(), capture_output=True, text=True, timeout=120,
-    )
+    try:
+        done = subprocess.run(
+            ["docker", "compose", "-f", _COMPOSE_FILE, "down"],
+            cwd=_repo_dir(), capture_output=True, text=True, timeout=120,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "docker not found on PATH"}
     return {"ok": done.returncode == 0, "output": (done.stdout + done.stderr).strip()}
 
 

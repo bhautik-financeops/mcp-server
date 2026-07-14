@@ -226,3 +226,12 @@ def test_docker_names_from_ps_parses():
     names = {r["name"] for r in rows}
     assert "pythonWebServerSync" in names
     assert "otherThing" not in names
+
+
+def test_stack_down_handles_missing_docker(monkeypatch):
+    def boom(*args, **kwargs):
+        raise FileNotFoundError("docker")
+    monkeypatch.setattr(server.subprocess, "run", boom)
+    out = server.stack_down()
+    assert out["ok"] is False
+    assert "docker" in out["error"]
