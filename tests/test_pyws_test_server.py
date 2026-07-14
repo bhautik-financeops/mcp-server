@@ -174,3 +174,55 @@ def test_fanout_empty_clientlist_raises(monkeypatch):
                         lambda: {"include_only": [], "exclude": [], "clients": {}})
     with pytest.raises(ValueError):
         server.fanout_test("/x", {"Request": {"payload": [{}]}})
+
+
+def test_container_logs_maps_engine_and_greps(monkeypatch):
+    captured = {}
+
+    class _Done:
+        stdout = "line one ok\nERROR boom\nline three\n"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        captured["cmd"] = cmd
+        return _Done()
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    out = server.container_logs("async", lines=50, grep="ERROR")
+    assert "pythonWebServerAsync" in captured["cmd"]
+    assert "--tail" in captured["cmd"] and "50" in captured["cmd"]
+    assert out["matched"] == ["ERROR boom"]
+
+
+def test_container_logs_rejects_bad_engine():
+    with pytest.raises(ValueError):
+        server.container_logs("gateway")
+
+
+def test_stack_up_launches_detached(monkeypatch):
+    captured = {}
+
+    class _Proc:
+        pid = 4321
+
+    def fake_popen(cmd, cwd=None, stdout=None, stderr=None, start_new_session=None):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["detached"] = start_new_session
+        return _Proc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    out = server.stack_up()
+    assert out["started"] is True
+    assert captured["detached"] is True
+    assert server._STARTUP_SCRIPT in " ".join(captured["cmd"])
+
+
+def test_docker_names_from_ps_parses():
+    ps = "pythonWebServerSync\trunning\tUp 2 minutes (healthy)\n" \
+         "otherThing\trunning\tUp 1 hour\n"
+    rows = server._docker_names_from_ps(ps)
+    names = {r["name"] for r in rows}
+    assert "pythonWebServerSync" in names
+    assert "otherThing" not in names

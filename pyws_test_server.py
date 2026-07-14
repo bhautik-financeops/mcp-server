@@ -321,5 +321,97 @@ def fanout_test(
     }
 
 
+_KNOWN_CONTAINERS = set(_CONTAINERS.values()) | {"redisMasterPythonWs"}
+
+
+def _engine_container(engine: str) -> str:
+    key = engine.strip().lower()
+    if key not in _CONTAINERS:
+        raise ValueError(f"Unknown engine '{engine}'. Use 'sync' or 'async'.")
+    return _CONTAINERS[key]
+
+
+def _docker_names_from_ps(ps_stdout: str) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for line in ps_stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, state, status = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if name in _KNOWN_CONTAINERS:
+            rows.append({"name": name, "state": state, "status": status})
+    return rows
+
+
+@mcp.tool()
+def stack_up(rebuild: bool = True) -> Dict[str, Any]:
+    """Start the local py_webservice stack via python-ws-startup.sh (detached; poll with stack_status)."""
+    repo = _repo_dir()
+    proc = subprocess.Popen(
+        ["sh", _STARTUP_SCRIPT],
+        cwd=repo,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"started": True, "pid": proc.pid, "pollWith": "stack_status",
+            "note": "Build + compose up runs in the background; give it a few minutes."}
+
+
+@mcp.tool()
+def stack_status() -> Dict[str, Any]:
+    """Report docker state for pythonWebServerSync / pythonWebServerAsync / redisMasterPythonWs."""
+    try:
+        done = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "docker not found on PATH"}
+    if done.returncode != 0:
+        return {"ok": False, "error": done.stderr.strip() or "docker ps failed"}
+    return {"ok": True, "containers": _docker_names_from_ps(done.stdout)}
+
+
+@mcp.tool()
+def container_logs(engine: str = "sync", lines: int = 200, grep: Optional[str] = None) -> Dict[str, Any]:
+    """Tail docker logs for the sync API or async worker, optionally regex-filtered (default ERROR/Traceback)."""
+    name = _engine_container(engine)
+    done = subprocess.run(
+        ["docker", "logs", "--tail", str(lines), name],
+        capture_output=True, text=True, timeout=30,
+    )
+    if done.returncode != 0:
+        return {"engine": engine, "container": name, "ok": False,
+                "error": done.stderr.strip() or "container not found / stack down"}
+    pattern = grep if grep is not None else r"ERROR|Traceback|Exception"
+    regex = re.compile(pattern)
+    combined = (done.stdout + done.stderr).splitlines()
+    matched = [ln for ln in combined if regex.search(ln)]
+    return {"engine": engine, "container": name, "ok": True,
+            "lineCount": len(combined), "matched": matched}
+
+
+@mcp.tool()
+def stack_restart(engine: str = "all") -> Dict[str, Any]:
+    """Restart the sync container, the async container, or both (engine='all')."""
+    targets = list(_CONTAINERS.values()) if engine.strip().lower() == "all" else [_engine_container(engine)]
+    results = {}
+    for name in targets:
+        done = subprocess.run(["docker", "restart", name], capture_output=True, text=True, timeout=60)
+        results[name] = {"ok": done.returncode == 0, "error": done.stderr.strip() or None}
+    return {"restarted": results}
+
+
+@mcp.tool()
+def stack_down() -> Dict[str, Any]:
+    """Stop the local stack via docker compose down."""
+    done = subprocess.run(
+        ["docker", "compose", "-f", _COMPOSE_FILE, "down"],
+        cwd=_repo_dir(), capture_output=True, text=True, timeout=120,
+    )
+    return {"ok": done.returncode == 0, "output": (done.stdout + done.stderr).strip()}
+
+
 if __name__ == "__main__":
     mcp.run()
