@@ -5,8 +5,11 @@ import re
 import subprocess
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+import certifi
 import requests
+import yaml
 from mcp.server.fastmcp import FastMCP
+from pymongo import MongoClient
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CONTEXT_DIR = os.path.join(_HERE, "pyws_context")
@@ -184,6 +187,81 @@ def health() -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         result["platform"] = {"ok": False, "error": str(exc)}
     return result
+
+
+def _load_overrides() -> Dict[str, Any]:
+    path = os.path.join(_CONTEXT_DIR, "client_overrides.yaml")
+    if not os.path.exists(path):
+        return {"include_only": [], "exclude": [], "clients": {}}
+    with open(path, "r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    data.setdefault("include_only", [])
+    data.setdefault("exclude", [])
+    data.setdefault("clients", {})
+    return data
+
+
+def _fetch_clients_from_mongo() -> List[Dict[str, Any]]:
+    uri = _required_env("MONGO_URI_QA")
+    db_name = os.getenv("PYWS_DB", "master").strip()
+    collection = os.getenv("PYWS_CLIENTS_COLLECTION", "clients").strip()
+    id_field = os.getenv("PYWS_CLIENT_ID_FIELD", "_id").strip()
+    medium_field = os.getenv("PYWS_MEDIUM_FIELD", "communicationMedium").strip()
+    client = MongoClient(uri, serverSelectionTimeoutMS=10_000, tlsCAFile=certifi.where())
+    cursor = client[db_name][collection].find({}, {id_field: 1, medium_field: 1})
+    clients: List[Dict[str, Any]] = []
+    for doc in cursor:
+        raw_id = doc.get(id_field)
+        if raw_id is None:
+            continue
+        clients.append({"clientId": str(raw_id), "preferredMedium": doc.get(medium_field)})
+    return clients
+
+
+def _merge_clients(mongo_clients: List[Dict[str, Any]], overrides: Dict[str, Any]) -> List[Dict[str, Any]]:
+    include_only = {str(c) for c in overrides.get("include_only", [])}
+    exclude = {str(c) for c in overrides.get("exclude", [])}
+    per_client = overrides.get("clients", {}) or {}
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for entry in mongo_clients:
+        cid = str(entry["clientId"])
+        if cid in exclude:
+            continue
+        if include_only and cid not in include_only:
+            continue
+        merged[cid] = {
+            "clientId": cid,
+            "preferredMedium": entry.get("preferredMedium"),
+            "sampleCustomerId": None,
+            "source": "mongo",
+        }
+
+    for cid, forcing in per_client.items():
+        cid = str(cid)
+        if cid in exclude:
+            continue
+        if include_only and cid not in include_only:
+            continue
+        record = merged.get(cid) or {"clientId": cid, "preferredMedium": None,
+                                     "sampleCustomerId": None, "source": "override"}
+        if forcing.get("preferredMedium") is not None:
+            record["preferredMedium"] = forcing["preferredMedium"]
+        if forcing.get("sampleCustomerId") is not None:
+            record["sampleCustomerId"] = forcing["sampleCustomerId"]
+        merged[cid] = record
+
+    return sorted(merged.values(), key=lambda r: r["clientId"])
+
+
+@mcp.tool()
+def get_clients(filter: Optional[str] = None) -> Dict[str, Any]:
+    """List distinct clients (clientId + preferred medium) from Mongo, merged with local overrides."""
+    merged = _merge_clients(_fetch_clients_from_mongo(), _load_overrides())
+    if filter:
+        needle = filter.strip().lower()
+        merged = [c for c in merged if needle in c["clientId"].lower()]
+    return {"count": len(merged), "clients": merged}
 
 
 if __name__ == "__main__":

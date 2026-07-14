@@ -85,3 +85,40 @@ def test_health_survives_unreachable(monkeypatch):
     assert out["ping"]["ok"] is False
     assert "refused" in out["ping"]["error"]
     assert out["platform"]["ok"] is False
+
+
+def test_merge_clients_applies_overrides():
+    mongo = [
+        {"clientId": "A", "preferredMedium": "email"},
+        {"clientId": "B", "preferredMedium": "sms"},
+        {"clientId": "C", "preferredMedium": "email"},
+    ]
+    overrides = {
+        "include_only": [],
+        "exclude": ["C"],
+        "clients": {"B": {"preferredMedium": "email", "sampleCustomerId": "cust-B"}},
+    }
+    merged = server._merge_clients(mongo, overrides)
+    by_id = {c["clientId"]: c for c in merged}
+    assert "C" not in by_id                       # excluded
+    assert by_id["B"]["preferredMedium"] == "email"   # forced
+    assert by_id["B"]["sampleCustomerId"] == "cust-B"
+    assert by_id["A"]["source"] == "mongo"
+
+
+def test_merge_clients_include_only_restricts():
+    mongo = [{"clientId": "A", "preferredMedium": "email"},
+             {"clientId": "B", "preferredMedium": "sms"}]
+    overrides = {"include_only": ["A"], "exclude": [], "clients": {}}
+    merged = server._merge_clients(mongo, overrides)
+    assert [c["clientId"] for c in merged] == ["A"]
+
+
+def test_merge_clients_adds_override_only_client():
+    mongo = [{"clientId": "A", "preferredMedium": "email"}]
+    overrides = {"include_only": [], "exclude": [],
+                 "clients": {"Z": {"preferredMedium": "sms", "sampleCustomerId": "cz"}}}
+    merged = server._merge_clients(mongo, overrides)
+    by_id = {c["clientId"]: c for c in merged}
+    assert by_id["Z"]["source"] == "override"
+    assert by_id["Z"]["preferredMedium"] == "sms"
