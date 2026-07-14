@@ -105,6 +105,64 @@ python mongodb_server.py
 
 ---
 
+## PyWebService Test MCP Server (`pyws-test`)
+
+Test the running `py_webservice` Flask app after any feature / bug-fix / enhancement. The server fires authenticated requests, fans a request out across every distinct client via each client's preferred medium, reads both container logs, and drives the local Docker stack. Correctness judgment stays with the caller — the tools return evidence, not a verdict.
+
+### What it provides
+
+Test / verify:
+- `list_endpoints(filter="")` — endpoint catalog (path + method) from the bundled OpenAPI spec
+- `describe_endpoint(path)` — methods, security, params, request-body example for one endpoint
+- `call_endpoint(path, payload, method="POST", ...)` — one authenticated request; returns status/body/latency
+- `get_clients(filter=None)` — distinct clients (clientId + preferred medium) from Mongo, merged with `pyws_context/client_overrides.yaml`
+- `fanout_test(path, base_payload, client_filter=None, ...)` — fire `path` once per client via each client's preferred medium; per-client aggregate `{summary, results}`
+- `health()` — `/ping` + authenticated `/dev/platform-configurations`
+
+Docker lifecycle (containers `pythonWebServerSync` / `pythonWebServerAsync`):
+- `stack_up()` — run `python-ws-startup.sh` detached (poll with `stack_status`)
+- `stack_status()` — docker state for sync / async / redis
+- `container_logs(engine="sync", lines=200, grep=None)` — `docker logs` tail; default surfaces `ERROR`/`Traceback`
+- `stack_restart(engine="all")` / `stack_down()`
+
+### .env keys
+
+```dotenv
+# ─── PyWebService Test (pyws-test) ───
+PYWS_BASE_URL=http://localhost:8080
+PYWS_API_KEY=<AES-masked X-py-webservice-api-key value (Hoppscotch python-ws-auth-key)>
+PYWS_REPO_DIR=/absolute/path/to/py_webservice
+PYWS_DB=master
+PYWS_CLIENTS_COLLECTION=clients
+PYWS_CLIENT_ID_FIELD=_id
+PYWS_MEDIUM_FIELD=communicationMedium
+# reuses MONGO_URI_QA
+```
+
+Optional override: `PYWS_ENV_FILE` — path to the env file.
+
+### Setup
+
+```bash
+pip install -r requirements-pyws-test-mcp.txt
+```
+
+### Run locally
+
+```bash
+python pyws_test_server.py
+```
+
+### Register with Claude Code
+
+```bash
+claude mcp add pyws-test -s user -- \
+  /path/to/mcp-servers/.venv/bin/python \
+  /path/to/mcp-servers/pyws_test_server.py
+```
+
+---
+
 ## Cursor MCP config example
 
 Add this to your Cursor MCP config to use both servers from any Cursor window:
@@ -124,6 +182,13 @@ Add this to your Cursor MCP config to use both servers from any Cursor window:
       "args": ["/path/to/mcp-servers/mongodb_server.py"],
       "env": {
         "MONGO_ENV_FILE": "/path/to/mcp-servers/.env"
+      }
+    },
+    "pyws-test": {
+      "command": "/path/to/mcp-servers/.venv/bin/python",
+      "args": ["/path/to/mcp-servers/pyws_test_server.py"],
+      "env": {
+        "PYWS_ENV_FILE": "/path/to/mcp-servers/.env"
       }
     }
   }
