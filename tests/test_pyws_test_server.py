@@ -74,3 +74,14 @@ def test_do_request_non_2xx_not_ok(monkeypatch):
     result = server._do_request("POST", "/x", {}, None, 30)
     assert result["ok"] is False
     assert result["body"] == "boom"
+
+
+def test_health_survives_unreachable(monkeypatch):
+    def boom(*args, **kwargs):
+        raise server.requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(server.requests, "request", boom)
+    out = server.health()
+    assert out["ping"]["ok"] is False
+    assert "refused" in out["ping"]["error"]
+    assert out["platform"]["ok"] is False
