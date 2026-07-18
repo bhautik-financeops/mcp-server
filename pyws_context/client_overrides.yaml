@@ -1,0 +1,10 @@
+# Fan-out overrides for get_clients / fanout_test.
+# include_only: if non-empty, restrict the fan-out to exactly these clientIds.
+include_only: []
+# exclude: drop these clientIds from the fan-out.
+exclude: []
+# clients: per-client forcing. sampleCustomerId used as customerId in AI-envelope bodies.
+clients: {}
+#   "64f205e20d0a30a9ab172955":
+#     preferredMedium: email
+#     sampleCustomerId: "64ca53747d4f7b1583aca873"
